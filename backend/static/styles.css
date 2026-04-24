@@ -1,0 +1,239 @@
+:root {
+  --bg: #0f1419;
+  --surface: #1a2332;
+  --border: #2d3a4f;
+  --text: #e8eef7;
+  --muted: #8b9cb3;
+  --accent: #3d8bfd;
+  --accent-dim: #2654a3;
+  --success: #3dd68c;
+  --warning: #f5a524;
+  --danger: #f55555;
+  --font: "DM Sans", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font);
+  background: radial-gradient(1200px 600px at 20% -10%, #1a2d4a 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #1a3d3a 0%, transparent 50%), var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.shell {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+
+h1 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-size: 1.75rem;
+  margin: 0 0 0.5rem;
+}
+
+.sub {
+  color: var(--muted);
+  margin: 0 0 2rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.btn {
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 500;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn:hover {
+  border-color: var(--muted);
+  background: #223044;
+}
+
+.btn-primary {
+  background: linear-gradient(180deg, #4a9dff, var(--accent));
+  border-color: #5aa8ff;
+  color: #061018;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.05);
+}
+
+.btn-danger {
+  border-color: #8a3030;
+  background: #3a1a1a;
+  color: #ffb4b4;
+}
+
+.btn-danger:hover {
+  background: #4a2222;
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.people {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.person {
+  display: block;
+  padding: 1.25rem 1rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #151d2a;
+  color: var(--text);
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s;
+}
+
+.person:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.nav-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #223044;
+  color: var(--muted);
+}
+
+.badge-live {
+  background: #1a3d2a;
+  color: var(--success);
+}
+
+.timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 2.5rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.65rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.log {
+  font-size: 0.82rem;
+  color: var(--muted);
+  max-height: 140px;
+  overflow-y: auto;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  background: #121a26;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.thumb {
+  max-width: 120px;
+  max-height: 72px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  object-fit: cover;
+}
+
+.flex-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.api-url-field {
+  width: 100%;
+  max-width: 28rem;
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #121a26;
+  color: var(--text);
+  margin: 0.5rem 0;
+}
+
+.api-url-field:focus {
+  outline: none;
+  border-color: var(--accent);
+}

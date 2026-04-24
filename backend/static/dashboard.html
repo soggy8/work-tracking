@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dashboard — work tracking</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <div class="nav-top">
+        <div>
+          <h1 style="margin-bottom: 0.15rem">Dashboard</h1>
+          <p class="sub" style="margin: 0">Today’s time and approvals · <span id="viewerLabel" class="muted"></span></p>
+        </div>
+        <div class="row">
+          <a class="btn btn-ghost" href="index.html">Switch person</a>
+          <a class="btn btn-ghost" href="work.html">Tracker</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size: 1.05rem; margin: 0 0 1rem">Today (UTC calendar day)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Person</th>
+              <th>Approved</th>
+              <th>Awaiting approval</th>
+              <th>Active now</th>
+            </tr>
+          </thead>
+          <tbody id="todayBody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size: 1.05rem; margin: 0 0 0.5rem">Needs your vote</h2>
+        <p class="muted" style="margin-top: 0">Stopped sessions only count after <strong>both</strong> other people approve.</p>
+        <div id="myPending"></div>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size: 1.05rem; margin: 0 0 1rem">All pending sessions</h2>
+        <div id="allPending"></div>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size: 1.05rem; margin: 0 0 1rem">Daily totals (approved only)</h2>
+        <p class="muted" style="margin-top: 0">Last 14 days, UTC.</p>
+        <div style="overflow-x: auto">
+          <table id="historyTable">
+            <thead>
+              <tr id="historyHead"></tr>
+            </thead>
+            <tbody id="historyBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <script src="env.js"></script>
+    <script src="config.js"></script>
+    <script src="api.js"></script>
+    <script>
+      const workerId = Number(localStorage.getItem("wt_worker_id") || "0");
+      const workerName = localStorage.getItem("wt_worker_name") || "";
+
+      function fmt(sec) {
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        if (h) return `${h}h ${m}m`;
+        return `${m}m`;
+      }
+
+      function fmtClock(sec) {
+        const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+        const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+        const s = String(sec % 60).padStart(2, "0");
+        return `${h}:${m}:${s}`;
+      }
+
+      async function loadDashboard() {
+        const label = document.getElementById("viewerLabel");
+        if (!workerId) {
+          label.textContent = "Pick who you are on the home page to approve sessions.";
+        } else {
+          label.textContent = `You are ${workerName} — approvals use your name.`;
+        }
+
+        let u = apiUrl("/api/dashboard");
+        if (workerId) u += (u.includes("?") ? "&" : "?") + "approver_worker_id=" + encodeURIComponent(String(workerId));
+        const r = await fetch(u);
+        const d = await r.json();
+
+        const tb = document.getElementById("todayBody");
+        tb.innerHTML = "";
+        for (const row of d.workers) {
+          const tr = document.createElement("tr");
+          const running = row.active_session
+            ? fmtClock(
+                Math.floor((Date.now() - new Date(row.active_session.started_at).getTime()) / 1000)
+              )
+            : "—";
+          tr.innerHTML = `
+            <td><strong>${row.worker.display_name}</strong></td>
+            <td>${fmt(row.approved_seconds_today)}</td>
+            <td>${fmt(row.pending_seconds_today)}</td>
+            <td>${row.active_session ? `<span class="badge badge-live">${running}</span>` : "—"}</td>
+          `;
+          tb.appendChild(tr);
+        }
+
+        const myBox = document.getElementById("myPending");
+        myBox.innerHTML = "";
+        if (!workerId) {
+          myBox.innerHTML = '<p class="muted">Select your name on the home page to approve.</p>';
+        } else if (!d.pending_approval_sessions.length) {
+          myBox.innerHTML = '<p class="muted">Nothing waiting for you.</p>';
+        } else {
+          for (const s of d.pending_approval_sessions) {
+            myBox.appendChild(renderSessionCard(s, true));
+          }
+        }
+
+        const allBox = document.getElementById("allPending");
+        allBox.innerHTML = "";
+        if (!d.all_pending_sessions.length) {
+          allBox.innerHTML = '<p class="muted">No sessions awaiting approval.</p>';
+        } else {
+          for (const s of d.all_pending_sessions) {
+            allBox.appendChild(renderSessionCard(s, false));
+          }
+        }
+      }
+
+      function renderSessionCard(s, withActions) {
+        const wrap = document.createElement("div");
+        wrap.style.border = "1px solid var(--border)";
+        wrap.style.borderRadius = "10px";
+        wrap.style.padding = "1rem";
+        wrap.style.marginBottom = "0.75rem";
+        const dur = s.duration_seconds != null ? fmtClock(s.duration_seconds) : "—";
+        const start = new Date(s.started_at).toLocaleString();
+        const end = s.ended_at ? new Date(s.ended_at).toLocaleString() : "—";
+        wrap.innerHTML = `
+          <div class="flex-between">
+            <div>
+              <strong>${s.worker_name}</strong>
+              <span class="muted"> · ${dur}</span>
+              <div class="muted" style="font-size:0.85rem;margin-top:0.35rem">${start} → ${end}</div>
+            </div>
+            <div class="row" data-actions></div>
+          </div>
+          <div class="row" style="margin-top:0.75rem" data-shots></div>
+        `;
+        const actions = wrap.querySelector("[data-actions]");
+        if (withActions && workerId) {
+          const ok = document.createElement("button");
+          ok.className = "btn btn-primary";
+          ok.textContent = "Approve";
+          ok.addEventListener("click", () => vote(s.id, true));
+          const no = document.createElement("button");
+          no.className = "btn btn-danger";
+          no.textContent = "Reject";
+          no.addEventListener("click", () => vote(s.id, false));
+          actions.append(ok, no);
+        }
+        loadThumbs(s.id, wrap.querySelector("[data-shots]"));
+        return wrap;
+      }
+
+      async function vote(sessionId, approve) {
+        const endpoint = approve ? "approve" : "reject";
+        const r = await fetch(apiUrl(`/api/sessions/${sessionId}/${endpoint}`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approver_worker_id: workerId }),
+        });
+        if (!r.ok) {
+          alert(await r.text());
+          return;
+        }
+        loadDashboard();
+        loadHistory();
+      }
+
+      async function loadThumbs(sessionId, host) {
+        const r = await fetch(apiUrl(`/api/sessions/${sessionId}/screenshots`));
+        if (!r.ok) return;
+        const shots = await r.json();
+        host.innerHTML = "";
+        for (const sh of shots.slice(0, 6)) {
+          const img = document.createElement("img");
+          img.className = "thumb";
+          img.src = sh.url.startsWith("http") ? sh.url : apiUrl(sh.url);
+          img.alt = "screenshot";
+          host.appendChild(img);
+        }
+      }
+
+      async function loadHistory() {
+        const r = await fetch(apiUrl("/api/history/daily?days=14"));
+        const data = await r.json();
+        const head = document.getElementById("historyHead");
+        const body = document.getElementById("historyBody");
+        head.innerHTML = "";
+        body.innerHTML = "";
+        if (!data.days.length) return;
+        const names = Object.keys(data.days[0].by_worker);
+        head.innerHTML = "<th>Date</th>" + names.map((n) => `<th>${n}</th>`).join("");
+        for (const row of data.days) {
+          const tr = document.createElement("tr");
+          const cells = [row.date, ...names.map((n) => fmt(row.by_worker[n] || 0))];
+          tr.innerHTML = cells.map((c, i) => (i === 0 ? `<td><strong>${c}</strong></td>` : `<td>${c}</td>`)).join("");
+          body.appendChild(tr);
+        }
+      }
+
+      loadDashboard();
+      loadHistory();
+      setInterval(loadDashboard, 15000);
+    </script>
+  </body>
+</html>

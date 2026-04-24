@@ -1,0 +1,11 @@
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+backend/.venv/
+backend/data/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/

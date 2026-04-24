@@ -1,0 +1,14 @@
+# One free HTTPS URL from Render (e.g. https://work-tracking.onrender.com) serves
+# BOTH the HTML UI and the FastAPI API — no paid domain, no DuckDNS, no Netlify required.
+#
+# Dashboard → New → Blueprint → connect repo → apply this file.
+
+services:
+  - type: web
+    name: work-tracking
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs

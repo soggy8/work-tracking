@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Work tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <div class="nav-top">
+        <div>
+          <h1 style="margin-bottom: 0.15rem">Tracker</h1>
+          <p class="sub" style="margin: 0">Logged in as <strong id="who"></strong></p>
+        </div>
+        <div class="row">
+          <a class="btn btn-ghost" href="index.html">Switch person</a>
+          <a class="btn btn-ghost" href="dashboard.html">Dashboard</a>
+        </div>
+      </div>
+
+      <div class="card flex-between">
+        <div>
+          <div class="row" style="margin-bottom: 0.5rem">
+            <span class="badge" id="stateBadge">Idle</span>
+          </div>
+          <div class="timer" id="timer">00:00:00</div>
+          <p class="muted" id="sessionHint" style="margin: 0.5rem 0 0">
+            Start a session when you begin real work. Stopped time waits for both teammates to approve.
+          </p>
+        </div>
+        <div class="row" style="align-self: flex-end">
+          <button type="button" class="btn btn-primary" id="btnStart">Start</button>
+          <button type="button" class="btn btn-danger" id="btnStop" disabled>Stop</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size: 1.1rem; margin: 0 0 0.75rem">Screen capture</h2>
+        <p class="muted" style="margin-top: 0">
+          The browser will ask which screen or window to share. For multiple monitors, add another capture
+          so both are recorded. Snapshots upload automatically at random intervals while a session is active
+          (about every few minutes, never too tight or too loose).
+        </p>
+        <div class="row" style="margin-top: 1rem">
+          <button type="button" class="btn btn-primary" id="btnShare">Allow screen capture</button>
+          <button type="button" class="btn" id="btnAddScreen">Add another screen</button>
+          <button type="button" class="btn btn-ghost" id="btnStopCapture" disabled>Stop all capture</button>
+        </div>
+        <div id="captureLog" class="log"></div>
+      </div>
+    </div>
+    <script src="env.js"></script>
+    <script src="config.js"></script>
+    <script src="api.js"></script>
+    <script>
+      const MIN_GAP_MS = 4 * 60 * 1000;
+      const MAX_GAP_MS = 10 * 60 * 1000;
+
+      const workerId = Number(localStorage.getItem("wt_worker_id") || "0");
+      const workerName = localStorage.getItem("wt_worker_name") || "";
+      if (!workerId) {
+        window.location.href = "index.html";
+      }
+      document.getElementById("who").textContent = workerName;
+
+      /** @type {{ stream: MediaStream, video: HTMLVideoElement }[]} */
+      let captures = [];
+      let activeSessionId = localStorage.getItem("wt_active_session_id") || null;
+      let sessionStartedAt = localStorage.getItem("wt_session_started_at")
+        ? new Date(localStorage.getItem("wt_session_started_at"))
+        : null;
+      let screenshotTimer = null;
+
+      const logEl = document.getElementById("captureLog");
+      function log(msg) {
+        const t = new Date().toLocaleTimeString();
+        logEl.textContent = `[${t}] ${msg}\n` + logEl.textContent;
+      }
+
+      function randomGapMs() {
+        return MIN_GAP_MS + Math.random() * (MAX_GAP_MS - MIN_GAP_MS);
+      }
+
+      function formatDuration(ms) {
+        const s = Math.floor(ms / 1000);
+        const h = String(Math.floor(s / 3600)).padStart(2, "0");
+        const m = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+        const sec = String(s % 60).padStart(2, "0");
+        return `${h}:${m}:${sec}`;
+      }
+
+      function tickTimer() {
+        const el = document.getElementById("timer");
+        if (!sessionStartedAt) {
+          el.textContent = "00:00:00";
+          return;
+        }
+        el.textContent = formatDuration(Date.now() - sessionStartedAt.getTime());
+      }
+      setInterval(tickTimer, 1000);
+      tickTimer();
+
+      async function refreshState() {
+        let u = apiUrl("/api/dashboard");
+        u += (u.includes("?") ? "&" : "?") + "approver_worker_id=" + encodeURIComponent(String(workerId));
+        const r = await fetch(u);
+        const d = await r.json();
+        const me = d.workers.find((w) => w.worker.id === workerId);
+        const active = me?.active_session;
+        const btnStart = document.getElementById("btnStart");
+        const btnStop = document.getElementById("btnStop");
+        const badge = document.getElementById("stateBadge");
+
+        if (active) {
+          activeSessionId = active.id;
+          sessionStartedAt = new Date(active.started_at);
+          localStorage.setItem("wt_active_session_id", active.id);
+          localStorage.setItem("wt_session_started_at", sessionStartedAt.toISOString());
+          btnStart.disabled = true;
+          btnStop.disabled = false;
+          badge.textContent = "Live session";
+          badge.className = "badge badge-live";
+          ensureScreenshotLoop();
+        } else {
+          localStorage.removeItem("wt_active_session_id");
+          localStorage.removeItem("wt_session_started_at");
+          activeSessionId = null;
+          sessionStartedAt = null;
+          btnStart.disabled = false;
+          btnStop.disabled = true;
+          badge.textContent = "Idle";
+          badge.className = "badge";
+          clearScreenshotSchedule();
+        }
+      }
+
+      function clearScreenshotSchedule() {
+        if (screenshotTimer) {
+          clearTimeout(screenshotTimer);
+          screenshotTimer = null;
+        }
+      }
+
+      function ensureScreenshotLoop() {
+        if (!activeSessionId || captures.length === 0) return;
+        if (screenshotTimer != null) return;
+        const run = () => {
+          if (!activeSessionId || captures.length === 0) {
+            clearScreenshotSchedule();
+            return;
+          }
+          uploadSnapshots().finally(() => {
+            if (!activeSessionId) {
+              clearScreenshotSchedule();
+              return;
+            }
+            screenshotTimer = setTimeout(run, randomGapMs());
+          });
+        };
+        screenshotTimer = setTimeout(run, randomGapMs());
+      }
+
+      async function uploadSnapshots() {
+        if (!activeSessionId || captures.length === 0) return;
+        for (const cap of captures) {
+          const video = cap.video;
+          if (video.readyState < 2) continue;
+          const w = video.videoWidth;
+          const h = video.videoHeight;
+          if (!w || !h) continue;
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(video, 0, 0, w, h);
+          const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.72));
+          if (!blob) continue;
+          const fd = new FormData();
+          fd.append("file", blob, "shot.jpg");
+          try {
+            const r = await fetch(apiUrl(`/api/sessions/${activeSessionId}/screenshot`), {
+              method: "POST",
+              body: fd,
+            });
+            if (r.ok) log(`Uploaded snapshot (${w}×${h})`);
+            else log(`Upload failed: ${r.status}`);
+          } catch (e) {
+            log(`Upload error: ${e.message || e}`);
+          }
+        }
+      }
+
+      async function addCapture() {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 1, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false,
+        });
+        const video = document.createElement("video");
+        video.playsInline = true;
+        video.muted = true;
+        video.srcObject = stream;
+        await video.play();
+        captures.push({ stream, video });
+        stream.getVideoTracks()[0].addEventListener("ended", () => {
+          captures = captures.filter((c) => c.stream !== stream);
+          log("A capture stream ended (tab closed or sharing stopped).");
+          if (!captures.length) clearScreenshotSchedule();
+        });
+        document.getElementById("btnStopCapture").disabled = false;
+        log("Capture added.");
+        if (activeSessionId) ensureScreenshotLoop();
+      }
+
+      document.getElementById("btnShare").addEventListener("click", () => {
+        addCapture().catch((e) => log(`Could not start capture: ${e.message || e}`));
+      });
+      document.getElementById("btnAddScreen").addEventListener("click", () => {
+        addCapture().catch((e) => log(`Could not add capture: ${e.message || e}`));
+      });
+      document.getElementById("btnStopCapture").addEventListener("click", () => {
+        for (const c of captures) {
+          c.stream.getTracks().forEach((t) => t.stop());
+        }
+        captures = [];
+        clearScreenshotSchedule();
+        document.getElementById("btnStopCapture").disabled = true;
+        log("All captures stopped.");
+      });
+
+      document.getElementById("btnStart").addEventListener("click", async () => {
+        const r = await fetch(apiUrl("/api/sessions/start"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ worker_id: workerId }),
+        });
+        if (!r.ok) {
+          alert(await r.text());
+          return;
+        }
+        const s = await r.json();
+        activeSessionId = s.id;
+        sessionStartedAt = new Date(s.started_at);
+        localStorage.setItem("wt_active_session_id", s.id);
+        localStorage.setItem("wt_session_started_at", sessionStartedAt.toISOString());
+        await refreshState();
+        ensureScreenshotLoop();
+      });
+
+      document.getElementById("btnStop").addEventListener("click", async () => {
+        if (!activeSessionId) return;
+        const r = await fetch(apiUrl(`/api/sessions/${activeSessionId}/stop`), { method: "POST" });
+        if (!r.ok) {
+          alert(await r.text());
+          return;
+        }
+        clearScreenshotSchedule();
+        activeSessionId = null;
+        sessionStartedAt = null;
+        await refreshState();
+      });
+
+      refreshState();
+      setInterval(refreshState, 20000);
+    </script>
+  </body>
+</html>

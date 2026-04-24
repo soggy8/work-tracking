@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Who is working?</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <h1>Who are you?</h1>
+      <p class="sub">Pick your name on this device. Nothing is stored server-side except your work sessions.</p>
+      <p class="muted" style="margin: -1rem 0 1.25rem; font-size: 0.92rem">
+        <strong>No paid domain, no DuckDNS.</strong> Free hosts give you a normal <code>https://…</code> link already (e.g.
+        <code>*.onrender.com</code>, <code>*.netlify.app</code>). DuckDNS / No-IP are only for pointing a name at a
+        <em>home</em> computer — you do not need them for Render or Netlify.
+      </p>
+
+      <div id="api-setup" class="card" style="display: none; border-color: #2d4a6f">
+        <h2 style="font-size: 1.15rem; margin: 0 0 0.5rem">Point this UI at your API (only if the list below fails)</h2>
+        <p class="muted" style="margin-top: 0">
+          <strong>Easiest:</strong> deploy once on
+          <a href="https://render.com" target="_blank" rel="noopener">Render</a> (Blueprint → this repo → <code>render.yaml</code>) and
+          <strong>bookmark the URL Render shows</strong> (something like <code>https://work-tracking.onrender.com</code>). That
+          <em>one</em> free link serves both the pages and Python — no Netlify, no second URL, no DNS tools.
+        </p>
+        <p class="muted" style="margin-top: 0.75rem">
+          If you still use <strong>Netlify for HTML only</strong>, paste your Render (or other) <strong>root API URL</strong> here — still a
+          free <code>https://…</code> address, not a domain you buy. Saved in this browser unless you set
+          <code>WT_API_URL</code> in Netlify’s build.
+        </p>
+        <label class="muted" for="api-url-input" style="display: block; margin-top: 0.75rem">API base URL</label>
+        <input
+          id="api-url-input"
+          class="api-url-field"
+          type="url"
+          autocomplete="url"
+          placeholder="https://your-api.onrender.com"
+        />
+        <div class="row" style="margin-top: 0.5rem">
+          <button type="button" class="btn btn-primary" id="api-url-save">Save and load names</button>
+        </div>
+        <p class="muted" style="margin: 0.75rem 0 0; font-size: 0.85rem">
+          Or open once:
+          <code style="word-break: break-all" id="api-example"></code>
+        </p>
+      </div>
+
+      <div id="api-error" class="card" style="display: none; border-color: #6a3540; background: #241318">
+        <strong style="color: #ffb4b4">Could not load people from the API</strong>
+        <p class="muted" style="margin-bottom: 0.75rem">
+          This page tried to load <code>/api/workers</code> from the same site you opened. That works on Render (or local dev). On
+          Netlify-only hosting there is no Python — use the form above or switch to a single Render deploy.
+        </p>
+        <ol class="muted" style="margin: 0 0 0.75rem; padding-left: 1.25rem">
+          <li>
+            <strong>Simplest:</strong> deploy on Render with <code>render.yaml</code>, open your
+            <code>https://….onrender.com</code> link — no Netlify, no extra DNS.
+          </li>
+          <li>
+            <strong>If you keep Netlify:</strong> deploy the API on Render, copy its free <code>https://….onrender.com</code> root URL, then
+            either paste it in the form above or set Netlify env <code>WT_API_URL</code> and redeploy with a build.
+          </li>
+        </ol>
+        <p class="muted" style="margin: 0; font-size: 0.85rem">
+          Current API base: <code id="api-base-shown">(empty)</code>
+        </p>
+      </div>
+      <div id="people-card" class="card">
+        <div id="people" class="people"></div>
+        <p class="muted" style="margin-top: 1.25rem; margin-bottom: 0">
+          Your choice is saved in this browser only. Use the dashboard to see everyone’s time.
+        </p>
+      </div>
+      <p><a href="dashboard.html">Open dashboard</a> · <a href="work.html">Go to tracker</a></p>
+    </div>
+    <script src="env.js"></script>
+    <script src="config.js"></script>
+    <script src="api.js"></script>
+    <script>
+      const setup = document.getElementById("api-setup");
+      const peopleCard = document.getElementById("people-card");
+      document.getElementById("api-example").textContent =
+        window.location.origin + window.location.pathname + "?api=https://your-api.example.com";
+
+      function normalizeApiUrl(raw) {
+        let s = String(raw || "").trim();
+        if (!s) return "";
+        s = s.replace(/\/+$/, "");
+        if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+        return s;
+      }
+
+      document.getElementById("api-url-save").addEventListener("click", () => {
+        const v = normalizeApiUrl(document.getElementById("api-url-input").value);
+        if (!v) {
+          alert("Paste your API URL, e.g. https://something.onrender.com");
+          return;
+        }
+        try {
+          localStorage.setItem("wt_api_base", v);
+        } catch (e) {
+          alert("Could not save (private window?). Try ?api=… in the address bar instead.");
+          return;
+        }
+        location.reload();
+      });
+
+      async function load() {
+        const err = document.getElementById("api-error");
+        err.style.display = "none";
+        const baseShown = document.getElementById("api-base-shown");
+        const envHint =
+          typeof window.__ENV_WT_API__ !== "undefined" && String(window.__ENV_WT_API__).trim()
+            ? String(window.__ENV_WT_API__).trim()
+            : "(empty — normal for Render-only or paste-URL setups)";
+        baseShown.textContent =
+          (window.__WT_API_BASE__ || "(same site — empty is OK on Render)") + " · env.js: " + envHint;
+
+        const box = document.getElementById("people");
+        box.innerHTML = '<p class="muted" style="margin:0">Loading…</p>';
+
+        let workers;
+        try {
+          const r = await fetch(apiUrl("/api/workers"));
+          const text = await r.text();
+          if (!r.ok) {
+            throw new Error("HTTP " + r.status + ": " + text.slice(0, 200));
+          }
+          workers = JSON.parse(text);
+        } catch (e) {
+          err.style.display = "block";
+          setup.style.display = "block";
+          peopleCard.style.display = "block";
+          document.getElementById("api-url-input").value = window.__WT_API_BASE__ || "";
+          box.innerHTML =
+            '<p class="muted" style="margin:0">Check the URL, CORS, and that the API is running. Update the form above and save.</p>';
+          console.error(e);
+          return;
+        }
+
+        if (!Array.isArray(workers) || workers.length === 0) {
+          err.style.display = "block";
+          setup.style.display = "block";
+          box.innerHTML = '<p class="muted" style="margin:0">Server returned no workers.</p>';
+          return;
+        }
+
+        err.style.display = "none";
+        setup.style.display = "none";
+        peopleCard.style.display = "block";
+        for (const w of workers) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "person";
+          b.textContent = w.display_name;
+          b.addEventListener("click", () => {
+            localStorage.setItem("wt_worker_id", String(w.id));
+            localStorage.setItem("wt_worker_name", w.display_name);
+            window.location.href = "work.html";
+          });
+          box.appendChild(b);
+        }
+      }
+
+      peopleCard.style.display = "block";
+      load();
+    </script>
+  </body>
+</html>

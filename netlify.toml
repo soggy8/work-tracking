@@ -1,0 +1,6 @@
+# Optional: Netlify is only for static files. Easiest path is Render-only (see render.yaml)
+# — one free *.onrender.com URL for UI + API. If you still use Netlify, set WT_API_URL
+# and run this build so scripts/write-netlify-env.js writes backend/static/env.js.
+[build]
+  publish = "backend/static"
+  command = "node scripts/write-netlify-env.js"
