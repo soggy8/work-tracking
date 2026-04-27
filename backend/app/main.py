@@ -91,6 +91,12 @@ def on_startup():
 
 def ensure_schema(db: Session) -> None:
     """Add missing columns for older local SQLite databases."""
+    bind = db.get_bind()
+    dialect_name = bind.dialect.name if bind is not None else ""
+    if dialect_name != "sqlite":
+        # PRAGMA/ALTER logic below is SQLite-specific.
+        return
+
     cols = db.execute(text("PRAGMA table_info(work_sessions)")).fetchall()
     names = {c[1] for c in cols}
     if "note" not in names:
