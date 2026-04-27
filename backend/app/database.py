@@ -10,6 +10,11 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 if not DATABASE_URL:
     DATABASE_URL = f"sqlite:///{DATA_DIR / 'work_tracking.db'}"
+elif DATABASE_URL.startswith("postgres://"):
+    # Render often provides this legacy scheme; force SQLAlchemy psycopg v3 driver.
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 engine_kwargs = {}
 if DATABASE_URL.startswith("sqlite"):
