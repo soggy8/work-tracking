@@ -46,6 +46,14 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def no_cache_static_pages(request, call_next):
+    response = await call_next(request)
+    if request.url.path in ("/", "/index.html", "/work.html", "/dashboard.html"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
+
+
 def _session_duration_seconds(s: WorkSession) -> Optional[int]:
     if s.ended_at is None:
         return None
@@ -177,7 +185,7 @@ def import_legacy_render_day(body: LegacyImportIn, db: Session = Depends(get_db)
 
     # Recovery data from the screenshot:
     # 2026-04-26 approved: Andrej 3h9m, Krste 4h11m, Filip 2h31m
-    # Plus Andrej currently has 34m pending approval.
+    # Plus Andrej has 1h45m pending approval.
     day = date(2026, 4, 26)
     day_start = datetime(day.year, day.month, day.day, 9, 0, 0)
     import_rows = [
@@ -213,22 +221,26 @@ def import_legacy_render_day(body: LegacyImportIn, db: Session = Depends(get_db)
         )
         created += 1
 
-    pending_key = "legacy-import-andrej-pending-34m"
+    pending_duration = 1 * 3600 + 45 * 60
+    pending_key = "legacy-import-andrej-pending-1h45m"
     pending_exists = (
         db.query(WorkSession)
         .filter(
             WorkSession.worker_id == workers["andrej"].id,
-            WorkSession.note == pending_key,
+            WorkSession.note.in_([pending_key, "legacy-import-andrej-pending-34m"]),
             WorkSession.status == "pending",
         )
         .first()
     )
-    if not pending_exists:
+    if pending_exists:
+        pending_exists.started_at = pending_exists.ended_at - timedelta(seconds=pending_duration)
+        pending_exists.note = pending_key
+    else:
         now = datetime.utcnow()
         db.add(
             WorkSession(
                 worker_id=workers["andrej"].id,
-                started_at=now - timedelta(minutes=34),
+                started_at=now - timedelta(seconds=pending_duration),
                 ended_at=now,
                 note=pending_key,
                 status="pending",
@@ -236,8 +248,8 @@ def import_legacy_render_day(body: LegacyImportIn, db: Session = Depends(get_db)
         )
         created += 1
 
+    db.commit()
     if created:
-        db.commit()
         return LegacyImportOut(
             imported=True,
             imported_count=created,
@@ -246,7 +258,7 @@ def import_legacy_render_day(body: LegacyImportIn, db: Session = Depends(get_db)
     return LegacyImportOut(
         imported=False,
         imported_count=0,
-        message="Legacy sessions already imported.",
+        message="Legacy sessions already imported; pending Andrej time is set to 1h45m.",
     )
 
 
@@ -372,20 +384,15 @@ def start_session(body: SessionStartIn, db: Session = Depends(get_db)):
 
 
 @app.post("/api/sessions/{session_id}/stop", response_model=SessionOut)
-def stop_session(
-    session_id: str,
-    body: Optional[SessionStopIn] = None,
-    db: Session = Depends(get_db),
-):
+def stop_session(session_id: str, body: SessionStopIn, db: Session = Depends(get_db)):
     s = db.query(WorkSession).filter(WorkSession.id == session_id).first()
     if not s:
         raise HTTPException(404, "Session not found")
     if s.status != "active":
         raise HTTPException(400, "Session is not active")
-    # Keep compatibility with older deployed frontend builds that call stop with no JSON body.
-    note = (body.note if body else "").strip()
+    note = body.note.strip()
     if len(note) < 3:
-        note = "Legacy client stop without note"
+        raise HTTPException(400, "Please write a short note (at least 3 characters)")
     s.ended_at = datetime.utcnow()
     s.note = note
     s.status = "pending"

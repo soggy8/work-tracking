@@ -88,7 +88,9 @@
       /** @type {{ stream: MediaStream, video: HTMLVideoElement }[]} */
       let captures = [];
       let activeSessionId = localStorage.getItem("wt_active_session_id") || null;
-      let sessionStartedAt = null;
+      let sessionStartedAt = localStorage.getItem("wt_session_started_at")
+        ? new Date(localStorage.getItem("wt_session_started_at"))
+        : null;
       let screenshotTimer = null;
 
       const logEl = document.getElementById("captureLog");
@@ -173,8 +175,17 @@
         const badge = document.getElementById("stateBadge");
 
         if (active) {
+          const previousSessionId = activeSessionId;
           activeSessionId = active.id;
-          sessionStartedAt = parseApiUtcDate(active.started_at);
+          const storedSessionId = localStorage.getItem("wt_active_session_id");
+          const storedStartedAt = localStorage.getItem("wt_session_started_at");
+          if (storedSessionId === active.id && storedStartedAt) {
+            sessionStartedAt = new Date(storedStartedAt);
+          } else if (!sessionStartedAt || previousSessionId !== active.id) {
+            // Use the local clock for the visible timer. Server timestamps are still
+            // used for approved totals, but not for this live display.
+            sessionStartedAt = new Date();
+          }
           localStorage.setItem("wt_active_session_id", active.id);
           localStorage.setItem("wt_session_started_at", sessionStartedAt.toISOString());
           btnStart.disabled = true;
@@ -300,7 +311,8 @@
         }
         const s = await r.json();
         activeSessionId = s.id;
-        // Start from current local clock immediately; refreshState will sync from API.
+        // Start from current local clock immediately. Server timestamps are not used
+        // for the live display because timezone parsing can make it jump.
         sessionStartedAt = new Date();
         localStorage.setItem("wt_active_session_id", s.id);
         localStorage.setItem("wt_session_started_at", sessionStartedAt.toISOString());
