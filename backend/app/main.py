@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, text
+from sqlalchemy import Integer, cast, extract, func, text
 from sqlalchemy.orm import Session
 
 from .database import DATA_DIR, Base, SessionLocal, engine, get_db
@@ -256,21 +256,27 @@ def _day_bounds_utc(d: date):
     return start, end
 
 
+def _duration_seconds_sql(db: Session):
+    """Cross-database SQL expression for ended_at - started_at in seconds."""
+    bind = db.get_bind()
+    dialect_name = bind.dialect.name if bind is not None else ""
+    if dialect_name == "postgresql":
+        return cast(
+            extract("epoch", WorkSession.ended_at) - extract("epoch", WorkSession.started_at),
+            Integer,
+        )
+    # SQLite path
+    return func.strftime("%s", WorkSession.ended_at) - func.strftime("%s", WorkSession.started_at)
+
+
 def _sum_duration_for_worker_today(
     db: Session, worker_id: int, statuses: List[str]
 ) -> int:
     today = datetime.utcnow().date()
     day_start, day_end = _day_bounds_utc(today)
+    duration_expr = _duration_seconds_sql(db)
     q = (
-        db.query(
-            func.sum(
-                func.strftime(
-                    "%s",
-                    WorkSession.ended_at,
-                )
-                - func.strftime("%s", WorkSession.started_at)
-            )
-        )
+        db.query(func.sum(duration_expr))
         .filter(WorkSession.worker_id == worker_id)
         .filter(WorkSession.status.in_(statuses))
         .filter(WorkSession.ended_at.isnot(None))
@@ -601,18 +607,14 @@ def daily_history(
         start = end - timedelta(days=days - 1)
     workers = db.query(Worker).order_by(Worker.id).all()
     result = []
+    duration_expr = _duration_seconds_sql(db)
     d = start
     while d <= end:
         day_start, day_end = _day_bounds_utc(d)
         row = {"date": d.isoformat(), "by_worker": {}}
         for w in workers:
             q = (
-                db.query(
-                    func.sum(
-                        func.strftime("%s", WorkSession.ended_at)
-                        - func.strftime("%s", WorkSession.started_at)
-                    )
-                )
+                db.query(func.sum(duration_expr))
                 .filter(WorkSession.worker_id == w.id)
                 .filter(WorkSession.status == "approved")
                 .filter(WorkSession.ended_at.isnot(None))
@@ -644,14 +646,10 @@ def this_week_totals(db: Session = Depends(get_db)):
     )
     workers = db.query(Worker).order_by(Worker.id).all()
     totals = {}
+    duration_expr = _duration_seconds_sql(db)
     for w in workers:
         q = (
-            db.query(
-                func.sum(
-                    func.strftime("%s", WorkSession.ended_at)
-                    - func.strftime("%s", WorkSession.started_at)
-                )
-            )
+            db.query(func.sum(duration_expr))
             .filter(WorkSession.worker_id == w.id)
             .filter(WorkSession.status == "approved")
             .filter(WorkSession.ended_at.isnot(None))
