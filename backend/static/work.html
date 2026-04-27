@@ -71,9 +71,9 @@
         </div>
       </div>
     </div>
-    <script src="env.js"></script>
-    <script src="config.js"></script>
-    <script src="api.js"></script>
+    <script src="env.js?v=20260427"></script>
+    <script src="config.js?v=20260427"></script>
+    <script src="api.js?v=20260427"></script>
     <script>
       const MIN_GAP_MS = 4 * 60 * 1000;
       const MAX_GAP_MS = 10 * 60 * 1000;
@@ -88,9 +88,7 @@
       /** @type {{ stream: MediaStream, video: HTMLVideoElement }[]} */
       let captures = [];
       let activeSessionId = localStorage.getItem("wt_active_session_id") || null;
-      let sessionStartedAt = localStorage.getItem("wt_session_started_at")
-        ? new Date(localStorage.getItem("wt_session_started_at"))
-        : null;
+      let sessionStartedAt = null;
       let screenshotTimer = null;
 
       const logEl = document.getElementById("captureLog");
@@ -302,7 +300,8 @@
         }
         const s = await r.json();
         activeSessionId = s.id;
-        sessionStartedAt = parseApiUtcDate(s.started_at);
+        // Start from current local clock immediately; refreshState will sync from API.
+        sessionStartedAt = new Date();
         localStorage.setItem("wt_active_session_id", s.id);
         localStorage.setItem("wt_session_started_at", sessionStartedAt.toISOString());
         await refreshState();

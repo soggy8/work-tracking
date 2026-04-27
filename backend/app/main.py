@@ -372,15 +372,20 @@ def start_session(body: SessionStartIn, db: Session = Depends(get_db)):
 
 
 @app.post("/api/sessions/{session_id}/stop", response_model=SessionOut)
-def stop_session(session_id: str, body: SessionStopIn, db: Session = Depends(get_db)):
+def stop_session(
+    session_id: str,
+    body: Optional[SessionStopIn] = None,
+    db: Session = Depends(get_db),
+):
     s = db.query(WorkSession).filter(WorkSession.id == session_id).first()
     if not s:
         raise HTTPException(404, "Session not found")
     if s.status != "active":
         raise HTTPException(400, "Session is not active")
-    note = body.note.strip()
+    # Keep compatibility with older deployed frontend builds that call stop with no JSON body.
+    note = (body.note if body else "").strip()
     if len(note) < 3:
-        raise HTTPException(400, "Please write a short note (at least 3 characters)")
+        note = "Legacy client stop without note"
     s.ended_at = datetime.utcnow()
     s.note = note
     s.status = "pending"
