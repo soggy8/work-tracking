@@ -56,6 +56,21 @@
         <div id="captureLog" class="log"></div>
       </div>
     </div>
+    <div id="noteModal" class="modal-backdrop" aria-hidden="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="noteModalTitle">
+        <h3 id="noteModalTitle" class="modal-title">Work Note</h3>
+        <p class="modal-sub muted">Before sending hours for approval, write what you worked on.</p>
+        <textarea
+          id="noteModalInput"
+          class="modal-textarea"
+          placeholder="Example: Implemented dashboard graph switching and fixed UTC timer parsing."
+        ></textarea>
+        <div class="row" style="margin-top: 0.75rem; justify-content: flex-end">
+          <button id="noteModalCancel" type="button" class="btn btn-ghost">Cancel</button>
+          <button id="noteModalOk" type="button" class="btn btn-primary">Submit hours</button>
+        </div>
+      </div>
+    </div>
     <script src="env.js"></script>
     <script src="config.js"></script>
     <script src="api.js"></script>
@@ -88,12 +103,53 @@
         return MIN_GAP_MS + Math.random() * (MAX_GAP_MS - MIN_GAP_MS);
       }
 
+      function askForNote() {
+        const backdrop = document.getElementById("noteModal");
+        const input = document.getElementById("noteModalInput");
+        const btnCancel = document.getElementById("noteModalCancel");
+        const btnOk = document.getElementById("noteModalOk");
+        input.value = "";
+        backdrop.classList.add("open");
+        input.focus();
+        return new Promise((resolve) => {
+          let done = false;
+          const cleanup = () => {
+            backdrop.classList.remove("open");
+            btnCancel.removeEventListener("click", onCancel);
+            btnOk.removeEventListener("click", onOk);
+            input.removeEventListener("keydown", onKey);
+          };
+          const finish = (value) => {
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve(value);
+          };
+          const onCancel = () => finish(null);
+          const onOk = () => finish(input.value);
+          const onKey = (e) => {
+            if (e.key === "Escape") finish(null);
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) finish(input.value);
+          };
+          btnCancel.addEventListener("click", onCancel);
+          btnOk.addEventListener("click", onOk);
+          input.addEventListener("keydown", onKey);
+        });
+      }
+
       function formatDuration(ms) {
         const s = Math.floor(ms / 1000);
         const h = String(Math.floor(s / 3600)).padStart(2, "0");
         const m = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
         const sec = String(s % 60).padStart(2, "0");
         return `${h}:${m}:${sec}`;
+      }
+
+      function parseApiUtcDate(value) {
+        if (!value) return null;
+        const raw = String(value);
+        const normalized = /[zZ]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`;
+        return new Date(normalized);
       }
 
       function tickTimer() {
@@ -120,7 +176,7 @@
 
         if (active) {
           activeSessionId = active.id;
-          sessionStartedAt = new Date(active.started_at);
+          sessionStartedAt = parseApiUtcDate(active.started_at);
           localStorage.setItem("wt_active_session_id", active.id);
           localStorage.setItem("wt_session_started_at", sessionStartedAt.toISOString());
           btnStart.disabled = true;
@@ -246,7 +302,7 @@
         }
         const s = await r.json();
         activeSessionId = s.id;
-        sessionStartedAt = new Date(s.started_at);
+        sessionStartedAt = parseApiUtcDate(s.started_at);
         localStorage.setItem("wt_active_session_id", s.id);
         localStorage.setItem("wt_session_started_at", sessionStartedAt.toISOString());
         await refreshState();
@@ -255,7 +311,17 @@
 
       document.getElementById("btnStop").addEventListener("click", async () => {
         if (!activeSessionId) return;
-        const r = await fetch(apiUrl(`/api/sessions/${activeSessionId}/stop`), { method: "POST" });
+        const note = await askForNote();
+        if (note == null) return;
+        if (note.trim().length < 3) {
+          alert("Please write at least 3 characters.");
+          return;
+        }
+        const r = await fetch(apiUrl(`/api/sessions/${activeSessionId}/stop`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note }),
+        });
         if (!r.ok) {
           alert(await r.text());
           return;

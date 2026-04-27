@@ -1,4 +1,6 @@
 import uuid
+import hashlib
+import secrets
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -8,7 +10,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from .database import DATA_DIR, Base, SessionLocal, engine, get_db
@@ -17,8 +19,14 @@ from .schemas import (
     ApprovalIn,
     DashboardOut,
     DashboardWorkerSummary,
+    LegacyImportIn,
+    LegacyImportOut,
+    WorkerLoginIn,
+    WorkerLoginOut,
+    SessionEditIn,
     SessionOut,
     SessionStartIn,
+    SessionStopIn,
     ScreenshotOut,
     WorkerOut,
 )
@@ -51,6 +59,7 @@ def _session_to_out(s: WorkSession, worker_name: str) -> SessionOut:
         worker_name=worker_name,
         started_at=s.started_at,
         ended_at=s.ended_at,
+        note=s.note,
         status=s.status,
         duration_seconds=_session_duration_seconds(s),
     )
@@ -74,14 +83,157 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
+        ensure_schema(db)
         seed_workers(db)
     finally:
         db.close()
 
 
+def ensure_schema(db: Session) -> None:
+    """Add missing columns for older local SQLite databases."""
+    cols = db.execute(text("PRAGMA table_info(work_sessions)")).fetchall()
+    names = {c[1] for c in cols}
+    if "note" not in names:
+        db.execute(text("ALTER TABLE work_sessions ADD COLUMN note VARCHAR(1000)"))
+        db.commit()
+    worker_cols = db.execute(text("PRAGMA table_info(workers)")).fetchall()
+    worker_names = {c[1] for c in worker_cols}
+    if "password_salt" not in worker_names:
+        db.execute(text("ALTER TABLE workers ADD COLUMN password_salt VARCHAR(64)"))
+        db.commit()
+    if "password_hash" not in worker_names:
+        db.execute(text("ALTER TABLE workers ADD COLUMN password_hash VARCHAR(128)"))
+        db.commit()
+
+
 @app.get("/api/workers", response_model=List[WorkerOut])
 def list_workers(db: Session = Depends(get_db)):
-    return db.query(Worker).order_by(Worker.id).all()
+    workers = db.query(Worker).order_by(Worker.id).all()
+    return [
+        WorkerOut(
+            id=w.id,
+            slug=w.slug,
+            display_name=w.display_name,
+            has_password=bool(w.password_hash and w.password_salt),
+        )
+        for w in workers
+    ]
+
+
+def _hash_password(password: str, salt: str) -> str:
+    return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+
+
+@app.post("/api/workers/{worker_id}/login", response_model=WorkerLoginOut)
+def worker_login(worker_id: int, body: WorkerLoginIn, db: Session = Depends(get_db)):
+    worker = db.query(Worker).filter(Worker.id == worker_id).first()
+    if not worker:
+        raise HTTPException(404, "Worker not found")
+    password = body.password.strip()
+    if len(password) < 4:
+        raise HTTPException(400, "Password must be at least 4 characters")
+
+    has_password = bool(worker.password_hash and worker.password_salt)
+    if not has_password:
+        salt = secrets.token_hex(16)
+        worker.password_salt = salt
+        worker.password_hash = _hash_password(password, salt)
+        db.commit()
+        return WorkerLoginOut(
+            worker_id=worker.id,
+            worker_name=worker.display_name,
+            first_time_setup=True,
+        )
+
+    expected = _hash_password(password, worker.password_salt or "")
+    if expected != worker.password_hash:
+        raise HTTPException(401, "Wrong password")
+    return WorkerLoginOut(
+        worker_id=worker.id,
+        worker_name=worker.display_name,
+        first_time_setup=False,
+    )
+
+
+@app.post("/api/admin/import-legacy-render-day", response_model=LegacyImportOut)
+def import_legacy_render_day(body: LegacyImportIn, db: Session = Depends(get_db)):
+    """One-time helper to recover the small Render SQLite data snapshot.
+
+    Protected by a temporary shared password requested by user.
+    """
+    if body.password != "test":
+        raise HTTPException(403, "Wrong import password")
+
+    workers = {w.slug: w for w in db.query(Worker).all()}
+    required = ("andrej", "krste", "filip")
+    if not all(slug in workers for slug in required):
+        raise HTTPException(400, "Missing required workers")
+
+    # Recovery data from the screenshot:
+    # 2026-04-26 approved: Andrej 3h9m, Krste 4h11m, Filip 2h31m
+    # Plus Andrej currently has 34m pending approval.
+    day = date(2026, 4, 26)
+    day_start = datetime(day.year, day.month, day.day, 9, 0, 0)
+    import_rows = [
+        ("andrej", 3 * 3600 + 9 * 60, "legacy-import-2026-04-26-approved"),
+        ("krste", 4 * 3600 + 11 * 60, "legacy-import-2026-04-26-approved"),
+        ("filip", 2 * 3600 + 31 * 60, "legacy-import-2026-04-26-approved"),
+    ]
+
+    created = 0
+    for slug, duration, key in import_rows:
+        worker = workers[slug]
+        exists = (
+            db.query(WorkSession)
+            .filter(
+                WorkSession.worker_id == worker.id,
+                WorkSession.note == key,
+                WorkSession.status == "approved",
+            )
+            .first()
+        )
+        if exists:
+            continue
+        started = day_start
+        ended = started + timedelta(seconds=duration)
+        db.add(
+            WorkSession(
+                worker_id=worker.id,
+                started_at=started,
+                ended_at=ended,
+                note=key,
+                status="approved",
+            )
+        )
+        created += 1
+
+    pending_key = "legacy-import-andrej-pending-34m"
+    pending_exists = (
+        db.query(WorkSession)
+        .filter(
+            WorkSession.worker_id == workers["andrej"].id,
+            WorkSession.note == pending_key,
+            WorkSession.status == "pending",
+        )
+        .first()
+    )
+    if not pending_exists:
+        now = datetime.utcnow()
+        db.add(
+            WorkSession(
+                worker_id=workers["andrej"].id,
+                started_at=now - timedelta(minutes=34),
+                ended_at=now,
+                note=pending_key,
+                status="pending",
+            )
+        )
+        created += 1
+
+    if created:
+        db.commit()
+        return LegacyImportOut(imported=True, message=f"Imported {created} legacy sessions.")
+    return LegacyImportOut(imported=False, message="Legacy sessions already imported.")
 
 
 def _day_bounds_utc(d: date):
@@ -200,13 +352,17 @@ def start_session(body: SessionStartIn, db: Session = Depends(get_db)):
 
 
 @app.post("/api/sessions/{session_id}/stop", response_model=SessionOut)
-def stop_session(session_id: str, db: Session = Depends(get_db)):
+def stop_session(session_id: str, body: SessionStopIn, db: Session = Depends(get_db)):
     s = db.query(WorkSession).filter(WorkSession.id == session_id).first()
     if not s:
         raise HTTPException(404, "Session not found")
     if s.status != "active":
         raise HTTPException(400, "Session is not active")
+    note = body.note.strip()
+    if len(note) < 3:
+        raise HTTPException(400, "Please write a short note (at least 3 characters)")
     s.ended_at = datetime.utcnow()
+    s.note = note
     s.status = "pending"
     db.commit()
     db.refresh(s)
@@ -282,6 +438,37 @@ def reject_session(session_id: str, body: ApprovalIn, db: Session = Depends(get_
         )
     )
     s.status = "rejected"
+    db.commit()
+    db.refresh(s)
+    w = db.query(Worker).filter(Worker.id == s.worker_id).first()
+    return _session_to_out(s, w.display_name if w else "?")
+
+
+@app.post("/api/sessions/{session_id}/reduce", response_model=SessionOut)
+def reduce_pending_session(
+    session_id: str,
+    body: SessionEditIn,
+    db: Session = Depends(get_db),
+):
+    s = db.query(WorkSession).filter(WorkSession.id == session_id).first()
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if s.status != "pending":
+        raise HTTPException(400, "Only pending sessions can be edited")
+    if body.editor_worker_id != s.worker_id:
+        raise HTTPException(403, "Only session owner can edit this session")
+    if s.ended_at is None:
+        raise HTTPException(400, "Cannot edit a session without end time")
+
+    current_seconds = int((s.ended_at - s.started_at).total_seconds())
+    if body.new_duration_seconds < 1:
+        raise HTTPException(400, "new_duration_seconds must be at least 1")
+    if body.new_duration_seconds >= current_seconds:
+        raise HTTPException(400, "Can only reduce duration, not increase or keep same")
+
+    s.ended_at = s.started_at + timedelta(seconds=body.new_duration_seconds)
+    # If anyone already voted, reset approvals because the duration changed.
+    db.query(SessionApproval).filter(SessionApproval.session_id == s.id).delete()
     db.commit()
     db.refresh(s)
     w = db.query(Worker).filter(Worker.id == s.worker_id).first()
@@ -378,11 +565,26 @@ def daily_history(
     days: int = 14,
     db: Session = Depends(get_db),
 ):
-    """Return per-worker approved seconds per calendar day (UTC) for last N days."""
-    if days < 1 or days > 90:
-        days = 14
+    """Return per-worker approved seconds per calendar day (UTC).
+
+    days=0 means all available history from the first approved session day.
+    """
     end = datetime.utcnow().date()
-    start = end - timedelta(days=days - 1)
+    if days == 0:
+        first_approved_end = (
+            db.query(func.min(WorkSession.ended_at))
+            .filter(WorkSession.status == "approved")
+            .filter(WorkSession.ended_at.isnot(None))
+            .scalar()
+        )
+        start = first_approved_end.date() if first_approved_end else end
+    else:
+        if days < 1:
+            days = 14
+        # Keep this large to support long-term history while avoiding accidental huge scans.
+        if days > 36500:
+            days = 36500
+        start = end - timedelta(days=days - 1)
     workers = db.query(Worker).order_by(Worker.id).all()
     result = []
     d = start
@@ -408,6 +610,46 @@ def daily_history(
         result.append(row)
         d += timedelta(days=1)
     return {"days": result}
+
+
+@app.get("/api/history/this-week")
+def this_week_totals(db: Session = Depends(get_db)):
+    """Return approved totals per worker for current UTC week (Mon-Sun)."""
+    today = datetime.utcnow().date()
+    week_start_date = today - timedelta(days=today.weekday())
+    week_end_date = week_start_date + timedelta(days=7)
+    week_start = datetime(
+        week_start_date.year,
+        week_start_date.month,
+        week_start_date.day,
+    )
+    week_end = datetime(
+        week_end_date.year,
+        week_end_date.month,
+        week_end_date.day,
+    )
+    workers = db.query(Worker).order_by(Worker.id).all()
+    totals = {}
+    for w in workers:
+        q = (
+            db.query(
+                func.sum(
+                    func.strftime("%s", WorkSession.ended_at)
+                    - func.strftime("%s", WorkSession.started_at)
+                )
+            )
+            .filter(WorkSession.worker_id == w.id)
+            .filter(WorkSession.status == "approved")
+            .filter(WorkSession.ended_at.isnot(None))
+            .filter(WorkSession.ended_at >= week_start)
+            .filter(WorkSession.ended_at < week_end)
+        )
+        totals[w.display_name] = int(q.scalar() or 0)
+    return {
+        "week_start": week_start_date.isoformat(),
+        "week_end_exclusive": week_end_date.isoformat(),
+        "totals": totals,
+    }
 
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

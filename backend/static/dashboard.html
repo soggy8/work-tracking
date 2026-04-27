@@ -20,6 +20,7 @@
           <p class="sub" style="margin: 0">Today’s time and approvals · <span id="viewerLabel" class="muted"></span></p>
         </div>
         <div class="row">
+          <button type="button" class="btn" id="legacyImportBtn" style="display: none">Import old Render day</button>
           <a class="btn btn-ghost" href="index.html">Switch person</a>
           <a class="btn btn-ghost" href="work.html">Tracker</a>
         </div>
@@ -53,14 +54,77 @@
 
       <div class="card">
         <h2 style="font-size: 1.05rem; margin: 0 0 1rem">Daily totals (approved only)</h2>
-        <p class="muted" style="margin-top: 0">Last 14 days, UTC.</p>
-        <div style="overflow-x: auto">
+        <p class="muted" style="margin-top: 0">UTC calendar days. Choose any range or load all history.</p>
+        <div class="row" style="margin: 0.75rem 0 0.5rem">
+          <button type="button" class="btn btn-primary" id="viewLineBtn">Line chart</button>
+          <button type="button" class="btn" id="viewBarBtn">Bar chart (this week)</button>
+          <button type="button" class="btn" id="viewTableBtn">Table</button>
+        </div>
+        <div class="row" style="margin: 0.75rem 0 1rem">
+          <label class="muted" for="historyDaysInput">Last N days</label>
+          <input
+            id="historyDaysInput"
+            type="number"
+            min="1"
+            max="36500"
+            value="30"
+            style="
+              width: 7rem;
+              font: inherit;
+              font-size: 0.95rem;
+              padding: 0.4rem 0.5rem;
+              border-radius: 8px;
+              border: 1px solid var(--border);
+              background: #121a26;
+              color: var(--text);
+            "
+          />
+          <button type="button" class="btn" id="historyLoadBtn">Load range</button>
+          <button type="button" class="btn" id="historyAllBtn">All time</button>
+        </div>
+        <div id="historyChartWrap" style="overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem">
+          <canvas id="historyChart" width="900" height="320" style="width: 100%; height: 320px"></canvas>
+        </div>
+        <div id="historyTableWrap" style="display: none; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem">
           <table id="historyTable">
             <thead>
               <tr id="historyHead"></tr>
             </thead>
             <tbody id="historyBody"></tbody>
           </table>
+        </div>
+        <p id="historyHint" class="muted" style="margin: 0.75rem 0 0; font-size: 0.85rem"></p>
+      </div>
+    </div>
+    <div id="reduceModal" class="modal-backdrop" aria-hidden="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="reduceModalTitle">
+        <h3 id="reduceModalTitle" class="modal-title">Reduce Pending Time</h3>
+        <p id="reduceModalSub" class="modal-sub muted"></p>
+        <input id="reduceModalInput" class="modal-input" type="text" placeholder="00:00:03" />
+        <div class="row" style="margin-top: 0.75rem; justify-content: flex-end">
+          <button id="reduceModalCancel" type="button" class="btn btn-ghost">Cancel</button>
+          <button id="reduceModalOk" type="button" class="btn btn-primary">Apply</button>
+        </div>
+      </div>
+    </div>
+    <div id="shotViewer" class="modal-backdrop" aria-hidden="true">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="shotViewerTitle"
+        style="width: min(1100px, 95vw); padding: 0.75rem"
+      >
+        <div class="flex-between" style="align-items: center; margin-bottom: 0.5rem">
+          <h3 id="shotViewerTitle" class="modal-title" style="margin: 0">Screenshot Preview</h3>
+          <button id="shotViewerClose" type="button" class="btn btn-ghost" aria-label="Close preview">X</button>
+        </div>
+        <div style="max-height: 80vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px">
+          <img
+            id="shotViewerImg"
+            alt="screenshot preview"
+            style="display: block; width: 100%; height: auto; background: #0c121c"
+          />
         </div>
       </div>
     </div>
@@ -70,6 +134,9 @@
     <script>
       const workerId = Number(localStorage.getItem("wt_worker_id") || "0");
       const workerName = localStorage.getItem("wt_worker_name") || "";
+      let currentHistoryView = "line";
+      let cachedDailyDays = [];
+      let cachedWeekTotals = null;
 
       function fmt(sec) {
         const h = Math.floor(sec / 3600);
@@ -83,6 +150,93 @@
         const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
         const s = String(sec % 60).padStart(2, "0");
         return `${h}:${m}:${s}`;
+      }
+
+      function parseApiUtcDate(value) {
+        if (!value) return null;
+        const raw = String(value);
+        const normalized = /[zZ]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`;
+        return new Date(normalized);
+      }
+
+      function parseClockInputToSeconds(value) {
+        const raw = String(value || "").trim();
+        const m = raw.match(/^(\d{2}):([0-5]\d):([0-5]\d)$/);
+        if (!m) return null;
+        const hours = Number(m[1]);
+        const minutes = Number(m[2]);
+        const seconds = Number(m[3]);
+        return hours * 3600 + minutes * 60 + seconds;
+      }
+
+      function openScreenshotViewer(url) {
+        const backdrop = document.getElementById("shotViewer");
+        const img = document.getElementById("shotViewerImg");
+        img.src = url;
+        backdrop.classList.add("open");
+      }
+
+      function closeScreenshotViewer() {
+        const backdrop = document.getElementById("shotViewer");
+        const img = document.getElementById("shotViewerImg");
+        backdrop.classList.remove("open");
+        img.src = "";
+      }
+
+      function askReduceModal({
+        title,
+        subtitle,
+        placeholder = "",
+        defaultValue = "",
+        inputType = "text",
+      }) {
+        const backdrop = document.getElementById("reduceModal");
+        const titleEl = document.getElementById("reduceModalTitle");
+        const sub = document.getElementById("reduceModalSub");
+        const input = document.getElementById("reduceModalInput");
+        const btnCancel = document.getElementById("reduceModalCancel");
+        const btnOk = document.getElementById("reduceModalOk");
+        titleEl.textContent = title;
+        sub.textContent = subtitle;
+        input.type = inputType;
+        input.placeholder = placeholder;
+        input.value = defaultValue;
+        backdrop.classList.add("open");
+        input.focus();
+        return new Promise((resolve) => {
+          let done = false;
+          const cleanup = () => {
+            backdrop.classList.remove("open");
+            btnCancel.removeEventListener("click", onCancel);
+            btnOk.removeEventListener("click", onOk);
+            input.removeEventListener("keydown", onKey);
+          };
+          const finish = (value) => {
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve(value);
+          };
+          const onCancel = () => finish(null);
+          const onOk = () => finish(input.value);
+          const onKey = (e) => {
+            if (e.key === "Escape") finish(null);
+            if (e.key === "Enter") finish(input.value);
+          };
+          btnCancel.addEventListener("click", onCancel);
+          btnOk.addEventListener("click", onOk);
+          input.addEventListener("keydown", onKey);
+        });
+      }
+
+      function askReduceDuration(current) {
+        return askReduceModal({
+          title: "Reduce Pending Time",
+          subtitle: `Current duration is ${fmtClock(current || 0)}. Enter a lower value as HH:MM:SS.`,
+          placeholder: "00:00:03",
+          defaultValue: "00:00:00",
+          inputType: "text",
+        });
       }
 
       async function loadDashboard() {
@@ -104,7 +258,7 @@
           const tr = document.createElement("tr");
           const running = row.active_session
             ? fmtClock(
-                Math.floor((Date.now() - new Date(row.active_session.started_at).getTime()) / 1000)
+                Math.floor((Date.now() - parseApiUtcDate(row.active_session.started_at).getTime()) / 1000)
               )
             : "—";
           tr.innerHTML = `
@@ -146,14 +300,15 @@
         wrap.style.padding = "1rem";
         wrap.style.marginBottom = "0.75rem";
         const dur = s.duration_seconds != null ? fmtClock(s.duration_seconds) : "—";
-        const start = new Date(s.started_at).toLocaleString();
-        const end = s.ended_at ? new Date(s.ended_at).toLocaleString() : "—";
+        const start = parseApiUtcDate(s.started_at).toLocaleString();
+        const end = s.ended_at ? parseApiUtcDate(s.ended_at).toLocaleString() : "—";
         wrap.innerHTML = `
           <div class="flex-between">
             <div>
               <strong>${s.worker_name}</strong>
               <span class="muted"> · ${dur}</span>
               <div class="muted" style="font-size:0.85rem;margin-top:0.35rem">${start} → ${end}</div>
+              <div class="muted" style="font-size:0.9rem;margin-top:0.45rem">Note: ${s.note || "—"}</div>
             </div>
             <div class="row" data-actions></div>
           </div>
@@ -171,8 +326,47 @@
           no.addEventListener("click", () => vote(s.id, false));
           actions.append(ok, no);
         }
+        if (workerId && s.worker_id === workerId) {
+          const reduce = document.createElement("button");
+          reduce.className = "btn";
+          reduce.textContent = "Reduce time";
+          reduce.addEventListener("click", () => reducePendingSession(s));
+          actions.append(reduce);
+        }
         loadThumbs(s.id, wrap.querySelector("[data-shots]"));
         return wrap;
+      }
+
+      async function reducePendingSession(session) {
+        const raw = await askReduceDuration(session.duration_seconds || 0);
+        if (raw == null) return;
+        const newDurationSeconds = parseClockInputToSeconds(raw);
+        if (newDurationSeconds == null) {
+          alert("Use HH:MM:SS format, for example 00:00:03");
+          return;
+        }
+        if (newDurationSeconds <= 0) {
+          alert("New duration must be at least 00:00:01");
+          return;
+        }
+        if (newDurationSeconds >= (session.duration_seconds || 0)) {
+          alert("New duration must be lower than current duration.");
+          return;
+        }
+        const r = await fetch(apiUrl(`/api/sessions/${session.id}/reduce`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            editor_worker_id: workerId,
+            new_duration_seconds: newDurationSeconds,
+          }),
+        });
+        if (!r.ok) {
+          alert(await r.text());
+          return;
+        }
+        await loadDashboard();
+        await loadHistory();
       }
 
       async function vote(sessionId, approve) {
@@ -198,32 +392,338 @@
         for (const sh of shots.slice(0, 6)) {
           const img = document.createElement("img");
           img.className = "thumb";
-          img.src = sh.url.startsWith("http") ? sh.url : apiUrl(sh.url);
+          const fullUrl = sh.url.startsWith("http") ? sh.url : apiUrl(sh.url);
+          img.src = fullUrl;
           img.alt = "screenshot";
+          img.style.cursor = "zoom-in";
+          img.title = "Open screenshot preview";
+          img.addEventListener("click", () => {
+            openScreenshotViewer(fullUrl);
+          });
           host.appendChild(img);
         }
       }
 
       async function loadHistory() {
-        const r = await fetch(apiUrl("/api/history/daily?days=14"));
+        const input = document.getElementById("historyDaysInput");
+        let days = Number(input.value || "30");
+        if (!Number.isFinite(days) || days < 1) days = 30;
+        if (days > 36500) days = 36500;
+        input.value = String(days);
+        const r = await fetch(apiUrl(`/api/history/daily?days=${days}`));
         const data = await r.json();
+        cachedDailyDays = data.days || [];
+        await renderHistoryView();
+      }
+
+      async function loadHistoryAll() {
+        document.getElementById("historyDaysInput").value = "0";
+        const r = await fetch(apiUrl("/api/history/daily?days=0"));
+        const data = await r.json();
+        cachedDailyDays = data.days || [];
+        await renderHistoryView();
+      }
+
+      async function loadWeekTotals() {
+        const r = await fetch(apiUrl("/api/history/this-week"));
+        cachedWeekTotals = await r.json();
+      }
+
+      function setHistoryView(view) {
+        currentHistoryView = view;
+        const lineBtn = document.getElementById("viewLineBtn");
+        const barBtn = document.getElementById("viewBarBtn");
+        const tableBtn = document.getElementById("viewTableBtn");
+        lineBtn.classList.toggle("btn-primary", view === "line");
+        barBtn.classList.toggle("btn-primary", view === "bar");
+        tableBtn.classList.toggle("btn-primary", view === "table");
+      }
+
+      async function renderHistoryView() {
+        const chartWrap = document.getElementById("historyChartWrap");
+        const tableWrap = document.getElementById("historyTableWrap");
+        if (currentHistoryView === "table") {
+          chartWrap.style.display = "none";
+          tableWrap.style.display = "block";
+          drawHistoryTable(cachedDailyDays);
+          return;
+        }
+        chartWrap.style.display = "block";
+        tableWrap.style.display = "none";
+        if (currentHistoryView === "bar") {
+          if (!cachedWeekTotals) {
+            await loadWeekTotals();
+          }
+          drawWeeklyBarChart(cachedWeekTotals);
+          return;
+        }
+        drawHistoryLineChart(cachedDailyDays);
+      }
+
+      function drawHistoryLineChart(days) {
+        const hint = document.getElementById("historyHint");
+        const canvas = document.getElementById("historyChart");
+        const ctx = canvas.getContext("2d");
+        const dpr = window.devicePixelRatio || 1;
+        const cssWidth = canvas.clientWidth || 900;
+        const cssHeight = 320;
+        canvas.width = Math.floor(cssWidth * dpr);
+        canvas.height = Math.floor(cssHeight * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+        if (!days || !days.length) {
+          hint.textContent = "No approved history yet.";
+          return;
+        }
+
+        const names = Object.keys(days[0].by_worker);
+        const colors = ["#4a9dff", "#3dd68c", "#f5a524", "#d680ff", "#ff6f91"];
+        const left = 46;
+        const right = cssWidth - 16;
+        const top = 18;
+        const bottom = cssHeight - 38;
+        const chartW = Math.max(1, right - left);
+        const chartH = Math.max(1, bottom - top);
+
+        const maxSec = Math.max(
+          1,
+          ...days.flatMap((d) => names.map((n) => Number(d.by_worker[n] || 0)))
+        );
+        const stepX = days.length > 1 ? chartW / (days.length - 1) : 0;
+        const yFor = (sec) => bottom - (sec / maxSec) * chartH;
+
+        // axes
+        ctx.strokeStyle = "#3a485f";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(left, top);
+        ctx.lineTo(left, bottom);
+        ctx.lineTo(right, bottom);
+        ctx.stroke();
+
+        // y grid
+        const ticks = 4;
+        ctx.fillStyle = "#8b9cb3";
+        ctx.font = "12px DM Sans, sans-serif";
+        for (let i = 0; i <= ticks; i++) {
+          const v = (maxSec * i) / ticks;
+          const y = yFor(v);
+          ctx.strokeStyle = "#263245";
+          ctx.beginPath();
+          ctx.moveTo(left, y);
+          ctx.lineTo(right, y);
+          ctx.stroke();
+          ctx.fillText(fmt(Math.round(v)), 4, y + 4);
+        }
+
+        names.forEach((name, idx) => {
+          const color = colors[idx % colors.length];
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          days.forEach((d, i) => {
+            const x = left + i * stepX;
+            const y = yFor(Number(d.by_worker[name] || 0));
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+        });
+
+        // x labels: first and last
+        ctx.fillStyle = "#8b9cb3";
+        if (days.length) {
+          ctx.fillText(days[0].date, left, cssHeight - 12);
+          const lastText = days[days.length - 1].date;
+          const m = ctx.measureText(lastText);
+          ctx.fillText(lastText, right - m.width, cssHeight - 12);
+        }
+
+        // legend
+        let lx = left;
+        const ly = 10;
+        names.forEach((name, idx) => {
+          const color = colors[idx % colors.length];
+          ctx.fillStyle = color;
+          ctx.fillRect(lx, ly, 10, 10);
+          lx += 14;
+          ctx.fillStyle = "#c8d3e4";
+          ctx.fillText(name, lx, ly + 9);
+          lx += ctx.measureText(name).width + 18;
+        });
+
+        hint.textContent = `${days.length} days loaded (${days[0].date} to ${days[days.length - 1].date}).`;
+      }
+
+      function drawWeeklyBarChart(weekData) {
+        const hint = document.getElementById("historyHint");
+        const canvas = document.getElementById("historyChart");
+        const ctx = canvas.getContext("2d");
+        const dpr = window.devicePixelRatio || 1;
+        const cssWidth = canvas.clientWidth || 900;
+        const cssHeight = 320;
+        canvas.width = Math.floor(cssWidth * dpr);
+        canvas.height = Math.floor(cssHeight * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+        if (!weekData || !weekData.totals) {
+          hint.textContent = "Could not load weekly totals.";
+          return;
+        }
+        const names = Object.keys(weekData.totals);
+        if (!names.length) {
+          hint.textContent = "No workers found.";
+          return;
+        }
+        const values = names.map((n) => Number(weekData.totals[n] || 0));
+        const maxSec = Math.max(1, ...values);
+        const left = 46;
+        const right = cssWidth - 16;
+        const top = 18;
+        const bottom = cssHeight - 38;
+        const chartW = Math.max(1, right - left);
+        const chartH = Math.max(1, bottom - top);
+        const barGap = 18;
+        const barW = Math.max(18, (chartW - barGap * (names.length - 1)) / names.length);
+        const colors = ["#4a9dff", "#3dd68c", "#f5a524", "#d680ff", "#ff6f91"];
+
+        ctx.strokeStyle = "#3a485f";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(left, top);
+        ctx.lineTo(left, bottom);
+        ctx.lineTo(right, bottom);
+        ctx.stroke();
+
+        ctx.fillStyle = "#8b9cb3";
+        ctx.font = "12px DM Sans, sans-serif";
+        const ticks = 4;
+        for (let i = 0; i <= ticks; i++) {
+          const v = (maxSec * i) / ticks;
+          const y = bottom - (v / maxSec) * chartH;
+          ctx.strokeStyle = "#263245";
+          ctx.beginPath();
+          ctx.moveTo(left, y);
+          ctx.lineTo(right, y);
+          ctx.stroke();
+          ctx.fillText(fmt(Math.round(v)), 4, y + 4);
+        }
+
+        names.forEach((name, idx) => {
+          const x = left + idx * (barW + barGap);
+          const sec = values[idx];
+          const h = (sec / maxSec) * chartH;
+          const y = bottom - h;
+          ctx.fillStyle = colors[idx % colors.length];
+          ctx.fillRect(x, y, barW, h);
+          ctx.fillStyle = "#c8d3e4";
+          const text = fmt(sec);
+          const tw = ctx.measureText(text).width;
+          ctx.fillText(text, x + (barW - tw) / 2, y - 6);
+          const nw = ctx.measureText(name).width;
+          ctx.fillText(name, x + (barW - nw) / 2, bottom + 16);
+        });
+
+        hint.textContent = `This week totals (${weekData.week_start} to ${weekData.week_end_exclusive}, end exclusive).`;
+      }
+
+      function drawHistoryTable(days) {
+        const hint = document.getElementById("historyHint");
         const head = document.getElementById("historyHead");
         const body = document.getElementById("historyBody");
         head.innerHTML = "";
         body.innerHTML = "";
-        if (!data.days.length) return;
-        const names = Object.keys(data.days[0].by_worker);
+        if (!days || !days.length) {
+          hint.textContent = "No approved history yet.";
+          return;
+        }
+        const names = Object.keys(days[0].by_worker);
         head.innerHTML = "<th>Date</th>" + names.map((n) => `<th>${n}</th>`).join("");
-        for (const row of data.days) {
+        for (const row of days) {
           const tr = document.createElement("tr");
           const cells = [row.date, ...names.map((n) => fmt(row.by_worker[n] || 0))];
           tr.innerHTML = cells.map((c, i) => (i === 0 ? `<td><strong>${c}</strong></td>` : `<td>${c}</td>`)).join("");
           body.appendChild(tr);
         }
+        hint.textContent = `${days.length} days in table (${days[0].date} to ${days[days.length - 1].date}).`;
       }
 
+      document.getElementById("historyLoadBtn").addEventListener("click", () => {
+        loadHistory();
+      });
+      document.getElementById("historyAllBtn").addEventListener("click", () => {
+        loadHistoryAll();
+      });
+      const legacyBtn = document.getElementById("legacyImportBtn");
+      if (workerName.toLowerCase() === "andrej") {
+        legacyBtn.style.display = "inline-block";
+      }
+      legacyBtn.addEventListener("click", async () => {
+        const pw = await askReduceModal({
+          title: "Legacy Import",
+          subtitle: "Enter import password to add the one-day Render snapshot.",
+          placeholder: "password",
+          defaultValue: "",
+          inputType: "password",
+        });
+        if (pw == null) return;
+        const r = await fetch(apiUrl("/api/admin/import-legacy-render-day"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: pw }),
+        });
+        const text = await r.text();
+        if (!r.ok) {
+          alert(text);
+          return;
+        }
+        try {
+          const out = JSON.parse(text);
+          alert(out.message || "Import completed.");
+        } catch {
+          alert("Import completed.");
+        }
+        await loadDashboard();
+        await loadHistory();
+      });
+      document.getElementById("viewLineBtn").addEventListener("click", async () => {
+        setHistoryView("line");
+        await renderHistoryView();
+      });
+      document.getElementById("viewBarBtn").addEventListener("click", async () => {
+        setHistoryView("bar");
+        await renderHistoryView();
+      });
+      document.getElementById("viewTableBtn").addEventListener("click", async () => {
+        setHistoryView("table");
+        await renderHistoryView();
+      });
+      window.addEventListener("resize", () => {
+        renderHistoryView();
+      });
+      document.getElementById("shotViewerClose").addEventListener("click", () => {
+        closeScreenshotViewer();
+      });
+      document.getElementById("shotViewer").addEventListener("click", (e) => {
+        if (e.target.id === "shotViewer") closeScreenshotViewer();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          const isOpen = document.getElementById("shotViewer").classList.contains("open");
+          if (isOpen) closeScreenshotViewer();
+        }
+      });
+
+      async function initHistory() {
+        setHistoryView("line");
+        await loadWeekTotals();
+        await loadHistory();
+      }
+
+      initHistory();
       loadDashboard();
-      loadHistory();
       setInterval(loadDashboard, 15000);
     </script>
   </body>

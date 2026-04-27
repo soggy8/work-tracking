@@ -70,10 +70,21 @@
       <div id="people-card" class="card">
         <div id="people" class="people"></div>
         <p class="muted" style="margin-top: 1.25rem; margin-bottom: 0">
-          Your choice is saved in this browser only. Use the dashboard to see everyone’s time.
+          First time per person: create a password. After that, password is required every time.
         </p>
       </div>
       <p><a href="dashboard.html">Open dashboard</a> · <a href="work.html">Go to tracker</a></p>
+    </div>
+    <div id="authModal" class="modal-backdrop" aria-hidden="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+        <h3 id="authModalTitle" class="modal-title">Password</h3>
+        <p id="authModalSub" class="modal-sub muted"></p>
+        <input id="authModalInput" class="modal-input" type="password" autocomplete="current-password" />
+        <div class="row" style="margin-top: 0.75rem; justify-content: flex-end">
+          <button id="authModalCancel" type="button" class="btn btn-ghost">Cancel</button>
+          <button id="authModalOk" type="button" class="btn btn-primary">Continue</button>
+        </div>
+      </div>
     </div>
     <script src="env.js"></script>
     <script src="config.js"></script>
@@ -90,6 +101,44 @@
         s = s.replace(/\/+$/, "");
         if (!/^https?:\/\//i.test(s)) s = "https://" + s;
         return s;
+      }
+
+      function askPasswordModal(title, subtitle) {
+        const backdrop = document.getElementById("authModal");
+        const titleEl = document.getElementById("authModalTitle");
+        const subEl = document.getElementById("authModalSub");
+        const input = document.getElementById("authModalInput");
+        const btnCancel = document.getElementById("authModalCancel");
+        const btnOk = document.getElementById("authModalOk");
+        titleEl.textContent = title;
+        subEl.textContent = subtitle;
+        input.value = "";
+        backdrop.classList.add("open");
+        input.focus();
+        return new Promise((resolve) => {
+          let done = false;
+          const cleanup = () => {
+            backdrop.classList.remove("open");
+            btnCancel.removeEventListener("click", onCancel);
+            btnOk.removeEventListener("click", onOk);
+            input.removeEventListener("keydown", onKey);
+          };
+          const finish = (value) => {
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve(value);
+          };
+          const onCancel = () => finish(null);
+          const onOk = () => finish(input.value);
+          const onKey = (e) => {
+            if (e.key === "Escape") finish(null);
+            if (e.key === "Enter") finish(input.value);
+          };
+          btnCancel.addEventListener("click", onCancel);
+          btnOk.addEventListener("click", onOk);
+          input.addEventListener("keydown", onKey);
+        });
       }
 
       document.getElementById("api-url-save").addEventListener("click", () => {
@@ -154,11 +203,32 @@
           const b = document.createElement("button");
           b.type = "button";
           b.className = "person";
-          b.textContent = w.display_name;
-          b.addEventListener("click", () => {
-            localStorage.setItem("wt_worker_id", String(w.id));
-            localStorage.setItem("wt_worker_name", w.display_name);
-            window.location.href = "work.html";
+          b.textContent = w.display_name + (w.has_password ? "" : " (setup password)");
+          b.addEventListener("click", async () => {
+            const password = await askPasswordModal(
+              w.has_password ? `Enter password for ${w.display_name}` : `Create password for ${w.display_name}`,
+              w.has_password
+                ? "Type your password to continue."
+                : "First login for this person: create a password (min 4 chars)."
+            );
+            if (password == null) return;
+            try {
+              const r = await fetch(apiUrl(`/api/workers/${w.id}/login`), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ password }),
+              });
+              if (!r.ok) {
+                alert(await r.text());
+                return;
+              }
+              const login = await r.json();
+              localStorage.setItem("wt_worker_id", String(login.worker_id));
+              localStorage.setItem("wt_worker_name", login.worker_name);
+              window.location.href = "work.html";
+            } catch (e) {
+              alert("Login failed. Check API connection.");
+            }
           });
           box.appendChild(b);
         }

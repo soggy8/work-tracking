@@ -8,6 +8,7 @@ class WorkerOut(BaseModel):
     id: int
     slug: str
     display_name: str
+    has_password: bool = False
 
     class Config:
         from_attributes = True
@@ -19,6 +20,7 @@ class SessionOut(BaseModel):
     worker_name: str
     started_at: datetime
     ended_at: Optional[datetime]
+    note: Optional[str] = None
     status: str
     duration_seconds: Optional[int] = None
 
@@ -30,8 +32,36 @@ class SessionStartIn(BaseModel):
     worker_id: int
 
 
+class WorkerLoginIn(BaseModel):
+    password: str
+
+
+class WorkerLoginOut(BaseModel):
+    worker_id: int
+    worker_name: str
+    first_time_setup: bool
+
+
+class LegacyImportIn(BaseModel):
+    password: str
+
+
+class LegacyImportOut(BaseModel):
+    imported: bool
+    message: str
+
+
+class SessionStopIn(BaseModel):
+    note: str
+
+
 class ApprovalIn(BaseModel):
     approver_worker_id: int
+
+
+class SessionEditIn(BaseModel):
+    editor_worker_id: int
+    new_duration_seconds: int
 
 
 class DashboardWorkerSummary(BaseModel):

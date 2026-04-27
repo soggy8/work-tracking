@@ -21,6 +21,8 @@ class Worker(Base):
     id = Column(Integer, primary_key=True, index=True)
     slug = Column(String(64), unique=True, nullable=False)
     display_name = Column(String(128), nullable=False)
+    password_salt = Column(String(64), nullable=True)
+    password_hash = Column(String(128), nullable=True)
 
     sessions = relationship("WorkSession", back_populates="worker")
 
@@ -32,6 +34,7 @@ class WorkSession(Base):
     worker_id = Column(Integer, ForeignKey("workers.id"), nullable=False)
     started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     ended_at = Column(DateTime, nullable=True)
+    note = Column(String(1000), nullable=True)
     # active | pending | approved | rejected
     status = Column(String(32), nullable=False, default="active")
 
