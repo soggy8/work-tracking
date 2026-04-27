@@ -685,8 +685,11 @@
         } catch {
           alert("Import completed.");
         }
+        // Make imported day visible immediately.
+        setHistoryView("table");
+        document.getElementById("historyDaysInput").value = "0";
         await loadDashboard();
-        await loadHistory();
+        await loadHistoryAll();
       });
       document.getElementById("viewLineBtn").addEventListener("click", async () => {
         setHistoryView("line");

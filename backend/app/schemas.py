@@ -49,6 +49,7 @@ class LegacyImportIn(BaseModel):
 class LegacyImportOut(BaseModel):
     imported: bool
     message: str
+    imported_count: int = 0
 
 
 class SessionStopIn(BaseModel):

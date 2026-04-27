@@ -238,8 +238,16 @@ def import_legacy_render_day(body: LegacyImportIn, db: Session = Depends(get_db)
 
     if created:
         db.commit()
-        return LegacyImportOut(imported=True, message=f"Imported {created} legacy sessions.")
-    return LegacyImportOut(imported=False, message="Legacy sessions already imported.")
+        return LegacyImportOut(
+            imported=True,
+            imported_count=created,
+            message=f"Imported {created} legacy sessions (3 approved + 1 pending).",
+        )
+    return LegacyImportOut(
+        imported=False,
+        imported_count=0,
+        message="Legacy sessions already imported.",
+    )
 
 
 def _day_bounds_utc(d: date):
